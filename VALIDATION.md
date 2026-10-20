@@ -76,6 +76,20 @@ Windows packages are unsigned. The macOS packaging script applies an ad-hoc
 signature, with no Developer ID signature or notarization. SHA256SUMS verifies
 file bytes and does not establish a publisher identity.
 
+## Linux Mint shortcut regression (2026-10-20)
+
+A follow-up run on Ubuntu 24.04 arm64 with a private Xvfb server reproduced
+`Clipboard capture cancelled` by reserving Ctrl+Alt+Escape in another X11
+client, as Cinnamon does. That arming check passes with the fix. A conflict
+on plain Escape now retains its actual diagnostic through clipboard capture.
+
+All 12 clipboard/arming checks and 13 end-to-end X11 scenarios passed,
+including consumed Escape with Caps Lock, Num Lock, and both enabled. The
+application's C code was generated with pinned V 0.5.2 and compiled with GCC
+inside the VM. The V core tests also passed with that compiler on macOS arm64.
+This follow-up did not exercise a physical Linux Mint desktop or rebuild the
+x86_64 AppImage.
+
 ## Re-run
 
 ```sh

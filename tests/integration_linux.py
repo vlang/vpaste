@@ -173,6 +173,24 @@ def test_all(d):
     assert d.received() == b'', (d.received(), d.log())
     passed.append('Escape cancels and is consumed')
 
+    for locks in [('Caps_Lock',), ('Num_Lock',), ('Caps_Lock', 'Num_Lock')]:
+        d.start()
+        try:
+            for key in locks:
+                d.hotkey(key)
+            d.set_clipboard('must not be typed')
+            d.hotkey()
+            d.wait_log('Armed:')
+            d.hotkey('Escape')
+            d.wait_log('Cancelled.')
+            d.click()
+            time.sleep(0.1)
+            assert d.received() == b'', (locks, d.received(), d.log())
+        finally:
+            for key in reversed(locks):
+                d.hotkey(key)
+        passed.append('Escape cancels and is consumed with ' + ' + '.join(locks))
+
     d.start()
     d.set_clipboard('must not be typed')
     d.hotkey()

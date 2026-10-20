@@ -191,12 +191,18 @@ void kp_set_active(int active) {
     kp.target = None; kp.clicked = None; kp.left_down = 0;
     if (!kp.display) return;
     kp.x_error = 0;
+    /* Only reserve plain Escape (including lock variants). AnyModifier also
+       claims desktop shortcuts such as Cinnamon's Ctrl+Alt+Escape; one such
+       conflict makes the entire AnyModifier grab fail with BadAccess. */
+    unsigned int locks[] = {0, LockMask, kp.num_mask, LockMask | kp.num_mask};
     if (kp.active) {
-        XGrabKey(kp.display, kp.escape_key, AnyModifier, kp.root, False, GrabModeAsync, GrabModeAsync);
+        for (int i = 0; i < 4; ++i)
+            XGrabKey(kp.display, kp.escape_key, locks[i], kp.root, False, GrabModeAsync, GrabModeAsync);
         XSync(kp.display, False);
         if (kp.x_error) { fail("Escape is already reserved by another application"); kp.pending |= KP_EVENT_ERROR; }
     } else {
-        XUngrabKey(kp.display, kp.escape_key, AnyModifier, kp.root);
+        for (int i = 0; i < 4; ++i)
+            XUngrabKey(kp.display, kp.escape_key, locks[i], kp.root);
         XFlush(kp.display);
     }
 }
@@ -307,7 +313,13 @@ void kp_shutdown(void) {
 static int selection_event(int wanted, Window requestor, Atom requested,
                            XEvent *found, int64_t deadline) {
     while (monotonic_ms() < deadline && !interrupted) {
-        while (XPending(kp.display)) {
+        /* Preserve a backend error's diagnostic and stop before accepting a
+           ready selection reply when cancellation/error is already pending. */
+        if (kp.pending & KP_EVENT_ERROR) return 0;
+        if (kp.pending & (KP_EVENT_CANCEL | KP_EVENT_HOTKEY | KP_EVENT_QUIT))
+            return fail("Clipboard capture cancelled");
+        if (kp.x_error) return fail("The X server rejected the clipboard transfer");
+        if (XPending(kp.display)) {
             XEvent event; XNextEvent(kp.display, &event);
             if ((wanted == SelectionNotify && event.type == SelectionNotify &&
                  event.xselection.requestor == requestor && event.xselection.selection == kp.clipboard &&
@@ -318,11 +330,7 @@ static int selection_event(int wanted, Window requestor, Atom requested,
                 *found = event; return 1;
             }
             handle_event(&event);
-        }
-        if (kp.pending & (KP_EVENT_CANCEL | KP_EVENT_HOTKEY | KP_EVENT_QUIT | KP_EVENT_ERROR))
-            return fail("Clipboard capture cancelled");
-        if (kp.x_error) return fail("The X server rejected the clipboard transfer");
-        pause_ms(2);
+        } else pause_ms(2);
     }
     return fail(interrupted ? "Clipboard capture interrupted" : "Clipboard owner did not respond within 1.5 seconds");
 }
@@ -394,6 +402,8 @@ failed:
 char *kp_clipboard(int max_bytes, int *out_len) {
     if (out_len) *out_len = 0;
     if (!out_len || !kp.display || max_bytes <= 0) { fail("Invalid clipboard request"); return NULL; }
+    /* kp_set_active may have failed before this call; do not erase why. */
+    if (kp.pending & KP_EVENT_ERROR) return NULL;
     if (!XGetSelectionOwner(kp.display, kp.clipboard)) { fail("Clipboard contains no text owner"); return NULL; }
     kp.error[0] = 0;
     char *text = read_selection(kp.utf8, max_bytes, out_len);

@@ -162,6 +162,10 @@ forward it. Default `keys` mode does not remap the system keymap.
 
 ### Linux display server
 
+On X11, cancel with Escape without Ctrl, Alt, Shift, or Super held. Caps Lock
+and Num Lock can stay on. Desktop shortcuts such as Cinnamon's Ctrl+Alt+Escape
+remain available while Keypour is armed.
+
 This version requires an **X11/Xorg session** and rejects native Wayland
 sessions, including an XWayland `DISPLAY` inside one. That avoids pretending a
 global shortcut/focus guard covers native Wayland windows. A future Wayland

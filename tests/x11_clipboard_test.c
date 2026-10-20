@@ -6,6 +6,7 @@
 #include "keypour.h"
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
+#include <X11/keysym.h>
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
@@ -28,7 +29,8 @@ enum test_case {
     CASE_DELAY_CHUNK,
     CASE_RECOVER,
     CASE_WRONG_TYPE,
-    CASE_LATIN1
+    CASE_LATIN1,
+    CASE_ESCAPE_CONFLICT
 };
 
 static const unsigned char pattern[] = "Keypour\t\"{}\" \xd0\x9f\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82 \xc3\xa9 \xf0\x9f\x99\x82\r\n";
@@ -167,6 +169,7 @@ static int serve_request(struct owner *o, const XSelectionRequestEvent *request)
     if (request->target != supported) { notify_request(o, request, None); return 1; }
     switch (o->command) {
         case CASE_UTF8:
+        case CASE_ESCAPE_CONFLICT:
             start_incr(o, request, o->large, PAYLOAD_SIZE, o->utf8, PAYLOAD_SIZE);
             break;
         case CASE_HEADER_TOO_LARGE:
@@ -216,6 +219,11 @@ static int run_owner(int commands, int replies, const unsigned char *large) {
     o.clipboard = XInternAtom(o.display, "CLIPBOARD", False);
     o.utf8 = XInternAtom(o.display, "UTF8_STRING", False);
     o.incr = XInternAtom(o.display, "INCR", False);
+    /* Cinnamon reserves Ctrl+Alt+Escape to restart the desktop. Keypour must
+       still be able to arm and consume plain Escape on the same X server. */
+    KeyCode escape = XKeysymToKeycode(o.display, XK_Escape);
+    XGrabKey(o.display, escape, ControlMask | Mod1Mask, DefaultRootWindow(o.display),
+        False, GrabModeAsync, GrabModeAsync);
     XSetSelectionOwner(o.display, o.clipboard, o.window, CurrentTime);
     XSync(o.display, False);
     if (XGetSelectionOwner(o.display, o.clipboard) != o.window || !write_all(replies, "R", 1)) {
@@ -239,6 +247,11 @@ static int run_owner(int commands, int replies, const unsigned char *large) {
                 break;
             }
             o.command = command; o.active = 0; o.stalled = 0;
+            if (command == CASE_ESCAPE_CONFLICT) {
+                XGrabKey(o.display, escape, 0, DefaultRootWindow(o.display),
+                    False, GrabModeAsync, GrabModeAsync);
+                XSync(o.display, False);
+            }
             if (!write_all(replies, "A", 1)) { result = 1; break; }
         }
         while (XPending(o.display)) {
@@ -325,6 +338,12 @@ int main(void) {
 #define SELECT(which) do { if (!select_case(commands[1], replies[0], (which))) goto cleanup; } while (0)
 #define EXPECT(check) do { if (!(check)) goto cleanup; } while (0)
     SELECT(CASE_UTF8);
+    kp_set_active(1);
+    EXPECT(expect_text(large, PAYLOAD_SIZE, PAYLOAD_SIZE,
+        "arming tolerates the desktop's Ctrl+Alt+Escape shortcut"));
+    EXPECT(!(kp_poll() & KP_EVENT_ERROR));
+    kp_set_active(0);
+    SELECT(CASE_UTF8);
     EXPECT(expect_text(large, PAYLOAD_SIZE, PAYLOAD_SIZE + 64, "forced INCR reassembles split UTF-8 exactly"));
     SELECT(CASE_UTF8);
     EXPECT(expect_text(large, PAYLOAD_SIZE, PAYLOAD_SIZE, "INCR payload exactly at the byte limit"));
@@ -344,6 +363,12 @@ int main(void) {
     EXPECT(expect_rejection(1024, "unsupported text format", "mismatched STRING response to UTF8 request rejected"));
     SELECT(CASE_LATIN1);
     EXPECT(expect_text(latin1_utf8, sizeof(latin1_utf8) - 1, 1024, "INCR STRING fallback converts Latin-1 to UTF-8"));
+    SELECT(CASE_ESCAPE_CONFLICT);
+    kp_set_active(1);
+    EXPECT(expect_rejection(PAYLOAD_SIZE, "Escape is already reserved",
+        "a plain Escape conflict keeps its diagnostic during clipboard capture"));
+    EXPECT(kp_poll() & KP_EVENT_ERROR);
+    kp_set_active(0);
     passed = 1;
 cleanup:
     if (initialized) kp_shutdown();
@@ -358,6 +383,6 @@ cleanup:
     }
     if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) passed = 0;
     free(large);
-    if (passed) puts("10 deterministic X11 clipboard protocol checks passed.");
+    if (passed) puts("12 deterministic X11 clipboard/arming checks passed.");
     return passed ? 0 : 1;
 }
