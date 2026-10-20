@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Keypour
+Comment=Type clipboard text into remote consoles
+Exec=keypour
+Icon=keypour
+Terminal=true
+Categories=Utility;Accessibility;
+StartupNotify=false

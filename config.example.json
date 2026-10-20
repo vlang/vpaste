@@ -1,0 +1,11 @@
+{
+  "hotkey": "Ctrl+Alt+V",
+  "interval_ms": 35,
+  "key_hold_ms": 8,
+  "start_delay_ms": 400,
+  "line_delay_ms": 150,
+  "arm_timeout_ms": 15000,
+  "max_chars": 100000,
+  "input_mode": "keys",
+  "trim_trailing_newlines": false
+}
