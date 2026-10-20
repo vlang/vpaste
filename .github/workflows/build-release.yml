@@ -1,0 +1,149 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-amd64
+            extension: AppImage
+          - os: windows-2022
+            target: windows-amd64
+            extension: zip
+          - os: macos-14
+            target: macos-arm64
+            extension: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Linux development packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential unzip python3 libx11-dev libxtst-dev libxi-dev libxkbcommon-dev xvfb xauth xdotool xclip
+      - name: Set up Windows C compiler
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Expose Windows compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          Join-Path $env:MSYS2_LOCATION 'ucrt64/bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Validate source version and release tag (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: python3 scripts/project-version.py
+      - name: Validate source version and release tag (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python scripts/project-version.py
+      - name: Install pinned V compiler (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: scripts/bootstrap-v.sh
+      - name: Install pinned V compiler (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/bootstrap-v.ps1
+      - name: Check Apple Silicon runner
+        if: runner.os == 'macOS'
+        run: test "$(uname -m)" = arm64
+      - name: Build, test, and package (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: scripts/build.sh --package
+      - name: Build, test, and package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build.ps1 -Package
+      - name: Exercise Windows input and clipboard
+        if: runner.os == 'Windows'
+        timeout-minutes: 2
+        shell: pwsh
+        # This is a disposable GitHub-hosted VM, not the developer's desktop.
+        run: ./scripts/test-windows.ps1 -IsolatedDesktop
+      - name: Exercise X11 input and clipboard
+        if: runner.os == 'Linux'
+        run: scripts/integration-linux.sh
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/keypour-*-${{ matrix.target }}.${{ matrix.extension }}
+          if-no-files-found: error
+          retention-days: 14
+
+  source:
+    name: Source archive
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Archive committed source
+        run: scripts/package-source.sh "$(python3 scripts/project-version.py)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-source
+          path: dist/keypour-*-source.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, source]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Check artifacts and make SHA-256 manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib
+          version = os.environ['RELEASE_TAG'][1:]
+          folder = pathlib.Path('release-assets')
+          names = [f'keypour-{version}-{suffix}' for suffix in (
+              'windows-amd64.zip', 'linux-amd64.AppImage', 'macos-arm64.tar.gz', 'source.tar.gz')]
+          lines = []
+          for name in sorted(names):
+              path = folder / name
+              assert path.is_file() and path.stat().st_size > 0, f'Missing release artifact: {name}'
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              lines.append(f'{digest}  {name}\n')
+          (folder / 'SHA256SUMS').write_text(''.join(lines))
+          PY
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --verify-tag --title "Keypour $RELEASE_TAG" --generate-notes

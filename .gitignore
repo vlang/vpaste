@@ -1,0 +1,11 @@
+/build/
+/dist/
+/.tools/
+*.o
+*.obj
+*.exe
+*.pdb
+*.dSYM/
+.DS_Store
+__pycache__/
+*.pyc
